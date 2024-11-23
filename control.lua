@@ -1,129 +1,90 @@
--- Required modules and settings
-require("train")
-require("yarm")
-require("events")
-require("power")
-require("research")
-
-bucket_settings = train_buckets(settings.startup["graftorio-train-histogram-buckets"].value)
-nth_tick = settings.startup["graftorio-nth-tick"].value or (60 * 15) -- Defaults to every 15 seconds
-server_save = settings.startup["graftorio-server-save"].value
-disable_train_stats = settings.startup["graftorio-disable-train-stats"].value
-
--- Write JSON to file
-function write_json_to_file(data, filename)
-    local json = game.table_to_json(data, true) -- Convert table to formatted JSON
-    game.write_file(filename, json .. "\n", false) -- Overwrite file each tick
+-- Write JSON stats to file
+function write_tick(json)
+    local filename = "graftorio_stats.json"
+    game.write_file(filename, json .. "\n", false) -- Overwrite the file
 end
 
--- Collect production and consumption data
+-- Collect production and consumption stats
 function get_prod_cons(production_statistics, prototypes)
     local production = {}
     local consumption = {}
 
-    for name, prototype in pairs(prototypes) do
-        production[name] = production_statistics.get_input_count(name)
-        consumption[name] = production_statistics.get_output_count(name)
+    for name, _ in pairs(prototypes) do
+        production[name] = production_statistics.get_input_count(name) or 0
+        consumption[name] = production_statistics.get_output_count(name) or 0
     end
 
     return production, consumption
 end
 
--- Gather data for a force
-function get_force_data(force)
-    local item_production, item_consumption = get_prod_cons(force.item_production_statistics, game.item_prototypes)
-    local fluid_production, fluid_consumption = get_prod_cons(force.fluid_production_statistics, game.fluid_prototypes)
+-- Gather power data for a specific surface
+function get_power_data(surface)
+    local power_data = {
+        production = 0,
+        consumption = 0,
+    }
+
+    for _, entity in pairs(surface.find_entities_filtered({type = {"electric-energy-interface", "generator", "solar-panel"}})) do
+        if entity.valid and entity.energy_production_statistics then
+            power_data.production = power_data.production + (entity.energy_production_statistics.get_input_count("electric-energy") or 0)
+        end
+    end
+
+    for _, entity in pairs(surface.find_entities_filtered({type = {"electric-energy-interface", "accumulator", "lamp"}})) do
+        if entity.valid and entity.energy_production_statistics then
+            power_data.consumption = power_data.consumption + (entity.energy_production_statistics.get_output_count("electric-energy") or 0)
+        end
+    end
+
+    return power_data
+end
+
+-- Gather force data for a specific surface (defaulting to "nauvis")
+function get_force_data(force, surface_name)
+    if not force or not force.valid then
+        return nil -- Ensure the force is valid
+    end
+
+    local surface = game.surfaces[surface_name or "nauvis"]
+    if not surface then
+        return nil -- Ensure the surface exists
+    end
+
+    -- Collect item production and consumption stats
+    local item_production, item_consumption = get_prod_cons(force.get_item_production_statistics(surface), game.item_prototypes)
+
+    -- Collect fluid production and consumption stats
+    local fluid_production, fluid_consumption = get_prod_cons(force.get_fluid_production_statistics(surface), game.fluid_prototypes)
+
+    -- Collect power production and consumption stats
+    local power_stats = get_power_data(surface)
 
     return {
         ["item_production"] = item_production,
         ["item_consumption"] = item_consumption,
         ["fluid_production"] = fluid_production,
         ["fluid_consumption"] = fluid_consumption,
+        ["power_production"] = power_stats.production,
+        ["power_consumption"] = power_stats.consumption,
     }
 end
 
--- Gather research data for a force
-function get_research_data(force)
-    return {
-        current_research = force.current_research and force.current_research.name or nil,
-        progress = force.current_research and force.current_research.progress or nil,
-    }
+-- Tick handler for periodic stats collection
+function tick_handler(event)
+    local data = {}
+    local player_force = game.forces["player"]
+
+    if player_force then
+        data["player"] = get_force_data(player_force, "nauvis")
+    end
+
+    -- Add a timestamp for Node-RED
+    data["timestamp"] = game.tick / 60 -- Convert ticks to seconds
+
+    -- Convert the data to JSON and write it to the file
+    local json = game.table_to_json(data, true)
+    write_tick(json)
 end
 
--- Collect pollution data
-function get_pollution_data(surface)
-    return surface.get_pollution({0, 0}) -- Adjust coordinates for specific areas if needed
-end
-
--- Tick handler for periodic metric collection
-function tick_handler(tick_event)
-    local tick = tick_event.tick
-    local data = {
-        ["tick"] = tick,
-        ["time_seconds"] = tick / 60,
-        ["forces"] = {},
-        ["pollution"] = get_pollution_data(game.surfaces["nauvis"]),
-    }
-
-    -- Collect data for each force
-    for _, force in pairs(game.forces) do
-        data["forces"][force.name] = {
-            production = get_force_data(force),
-            research = get_research_data(force),
-        }
-    end
-
-    -- Write data to JSON file
-    write_json_to_file(data, "graftorio_stats.json")
-end
-
--- Initialization
-script.on_init(function()
-    if game.active_mods["YARM"] then
-        global.yarm_on_site_update_event_id = remote.call("YARM", "get_on_site_updated_event_id")
-        script.on_event(global.yarm_on_site_update_event_id, handleYARM)
-    end
-
-    on_power_init()
-
-    -- Set periodic tick handler
-    script.on_nth_tick(nth_tick, tick_handler)
-
-    -- Register other events
-    script.on_event(defines.events.on_player_joined_game, register_events_players)
-    script.on_event(defines.events.on_player_left_game, register_events_players)
-
-    if not disable_train_stats then
-        script.on_event(defines.events.on_train_changed_state, register_events_train)
-    end
-end)
-
--- Handle mod reloads
-script.on_load(function()
-    if global.yarm_on_site_update_event_id then
-        if script.get_event_handler(global.yarm_on_site_update_event_id) then
-            script.on_event(global.yarm_on_site_update_event_id, handleYARM)
-        end
-    end
-
-    on_power_load()
-
-    -- Reset periodic tick handler
-    script.on_nth_tick(nth_tick, tick_handler)
-
-    -- Re-register events
-    script.on_event(defines.events.on_player_joined_game, register_events_players)
-    script.on_event(defines.events.on_player_left_game, register_events_players)
-
-    if not disable_train_stats then
-        script.on_event(defines.events.on_train_changed_state, register_events_train)
-    end
-end)
-
--- Handle configuration changes
-script.on_configuration_changed(function(event)
-    if game.active_mods["YARM"] then
-        global.yarm_on_site_update_event_id = remote.call("YARM", "get_on_site_updated_event_id")
-        script.on_event(global.yarm_on_site_update_event_id, handleYARM)
-    end
-end)
+-- Run the tick handler every 15 seconds (60 ticks * 15)
+script.on_nth_tick(60 * 15, tick_handler)

@@ -1,10 +1,10 @@
 {
-  "name": "graftorio-kraus",
-  "version": "0.0.1",
-  "title": "graftorio-kraus",
-  "author": "remijouannet",
-  "description": "dump game metrics to node red",
-  "homepage": "https://github.com/ekrauser",
-  "dependencies": ["? YARM >= 0.8.207"],
-  "factorio_version": "2.0"
+  "name": "graftorio-node-red",
+  "version": "1.0.0",
+  "title": "Graftorio Node-RED",
+  "author": "YourName",
+  "description": "Exports item, fluid, and power stats to JSON for integration with Node-RED.",
+  "factorio_version": "2.0",
+  "dependencies": []
 }
+
