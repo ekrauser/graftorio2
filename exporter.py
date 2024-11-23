@@ -11,7 +11,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # Configuration
 JSON_DIRECTORY = Path("/factorio/script-output")
 JSON_FILENAME = "graftorio_stats.json"
-NODE_RED_ENDPOINT = os.getenv("NODE_RED_ENDPOINT", "http://localhost:1880/factorio-stats")  # Replace with your Node-RED endpoint
+NODE_RED_ENDPOINT = os.getenv("NODE_RED_ENDPOINT", "http://192.168.1.245:1880/factorio-stats")  # Replace with your Node-RED endpoint
 SEND_INTERVAL = int(os.getenv("SEND_INTERVAL", 15))  # Interval in seconds
 
 def read_stats_file(filepath):
