@@ -1,8 +1,8 @@
 {
-  "name": "graftorio-node-red",
+  "name": "graftorio-kraus",
   "version": "1.0.0",
   "title": "Graftorio Node-RED",
-  "author": "YourName",
+  "author": "ekrauser",
   "description": "Exports item, fluid, and power stats to JSON for integration with Node-RED.",
   "factorio_version": "2.0",
   "dependencies": []
