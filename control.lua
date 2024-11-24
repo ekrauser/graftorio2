@@ -1,90 +1,201 @@
--- Write JSON stats to file
-function write_tick(json)
-    local filename = "graftorio_stats.json"
-    game.write_file(filename, json .. "\n", false) -- Overwrite the file
-end
+prometheus = require("prometheus/prometheus")
+require("train")
+require("yarm")
+require("events")
+require("power")
+require("research")
 
--- Collect production and consumption stats
-function get_prod_cons(production_statistics, prototypes)
-    local production = {}
-    local consumption = {}
+bucket_settings = train_buckets(settings.startup["graftorio2-train-histogram-buckets"].value)
+nth_tick = settings.startup["graftorio2-nth-tick"].value
+server_save = settings.startup["graftorio2-server-save"].value
+disable_train_stats = settings.startup["graftorio2-disable-train-stats"].value
 
-    for name, _ in pairs(prototypes) do
-        production[name] = production_statistics.get_input_count(name) or 0
-        consumption[name] = production_statistics.get_output_count(name) or 0
-    end
+gauge_tick = prometheus.gauge("factorio_tick", "game tick")
+gauge_connected_player_count = prometheus.gauge("factorio_connected_player_count", "connected players")
+gauge_total_player_count = prometheus.gauge("factorio_total_player_count", "total registered players")
 
-    return production, consumption
-end
+gauge_seed = prometheus.gauge("factorio_seed", "seed", { "surface" })
+gauge_mods = prometheus.gauge("factorio_mods", "mods", { "name", "version" })
 
--- Gather power data for a specific surface
-function get_power_data(surface)
-    local power_data = {
-        production = 0,
-        consumption = 0,
-    }
+gauge_item_production_input = prometheus.gauge("factorio_item_production_input", "items produced", { "force", "name" })
+gauge_item_production_output =
+	prometheus.gauge("factorio_item_production_output", "items consumed", { "force", "name" })
 
-    for _, entity in pairs(surface.find_entities_filtered({type = {"electric-energy-interface", "generator", "solar-panel"}})) do
-        if entity.valid and entity.energy_production_statistics then
-            power_data.production = power_data.production + (entity.energy_production_statistics.get_input_count("electric-energy") or 0)
-        end
-    end
+gauge_fluid_production_input =
+	prometheus.gauge("factorio_fluid_production_input", "fluids produced", { "force", "name" })
+gauge_fluid_production_output =
+	prometheus.gauge("factorio_fluid_production_output", "fluids consumed", { "force", "name" })
 
-    for _, entity in pairs(surface.find_entities_filtered({type = {"electric-energy-interface", "accumulator", "lamp"}})) do
-        if entity.valid and entity.energy_production_statistics then
-            power_data.consumption = power_data.consumption + (entity.energy_production_statistics.get_output_count("electric-energy") or 0)
-        end
-    end
+gauge_kill_count_input = prometheus.gauge("factorio_kill_count_input", "kills", { "force", "name" })
+gauge_kill_count_output = prometheus.gauge("factorio_kill_count_output", "losses", { "force", "name" })
 
-    return power_data
-end
+gauge_entity_build_count_input =
+	prometheus.gauge("factorio_entity_build_count_input", "entities placed", { "force", "name" })
+gauge_entity_build_count_output =
+	prometheus.gauge("factorio_entity_build_count_output", "entities removed", { "force", "name" })
 
--- Gather force data for a specific surface (defaulting to "nauvis")
-function get_force_data(force, surface_name)
-    if not force or not force.valid then
-        return nil -- Ensure the force is valid
-    end
+gauge_pollution_production_input =
+	prometheus.gauge("factorio_pollution_production_input", "pollutions produced", { "force", "name" })
+gauge_pollution_production_output =
+	prometheus.gauge("factorio_pollution_production_output", "pollutions consumed", { "force", "name" })
 
-    local surface = game.surfaces[surface_name or "nauvis"]
-    if not surface then
-        return nil -- Ensure the surface exists
-    end
+gauge_evolution = prometheus.gauge("factorio_evolution", "evolution", { "force", "type" })
 
-    -- Collect item production and consumption stats
-    local item_production, item_consumption = get_prod_cons(force.get_item_production_statistics(surface), game.item_prototypes)
+gauge_research_queue = prometheus.gauge("factorio_research_queue", "research", { "force", "name", "level", "index" })
 
-    -- Collect fluid production and consumption stats
-    local fluid_production, fluid_consumption = get_prod_cons(force.get_fluid_production_statistics(surface), game.fluid_prototypes)
+gauge_items_launched =
+	prometheus.gauge("factorio_items_launched_total", "items launched in rockets", { "force", "name" })
 
-    -- Collect power production and consumption stats
-    local power_stats = get_power_data(surface)
+gauge_yarm_site_amount =
+	prometheus.gauge("factorio_yarm_site_amount", "YARM - site amount remaining", { "force", "name", "type" })
+gauge_yarm_site_ore_per_minute =
+	prometheus.gauge("factorio_yarm_site_ore_per_minute", "YARM - site ore per minute", { "force", "name", "type" })
+gauge_yarm_site_remaining_permille = prometheus.gauge(
+	"factorio_yarm_site_remaining_permille",
+	"YARM - site permille remaining",
+	{ "force", "name", "type" }
+)
 
-    return {
-        ["item_production"] = item_production,
-        ["item_consumption"] = item_consumption,
-        ["fluid_production"] = fluid_production,
-        ["fluid_consumption"] = fluid_consumption,
-        ["power_production"] = power_stats.production,
-        ["power_consumption"] = power_stats.consumption,
-    }
-end
+gauge_train_trip_time = prometheus.gauge("factorio_train_trip_time", "train trip time", { "from", "to", "train_id" })
+gauge_train_wait_time = prometheus.gauge("factorio_train_wait_time", "train wait time", { "from", "to", "train_id" })
 
--- Tick handler for periodic stats collection
-function tick_handler(event)
-    local data = {}
-    local player_force = game.forces["player"]
+histogram_train_trip_time = prometheus.histogram(
+	"factorio_train_trip_time_groups",
+	"train trip time",
+	{ "from", "to", "train_id" },
+	bucket_settings
+)
+histogram_train_wait_time = prometheus.histogram(
+	"factorio_train_wait_time_groups",
+	"train wait time",
+	{ "from", "to", "train_id" },
+	bucket_settings
+)
 
-    if player_force then
-        data["player"] = get_force_data(player_force, "nauvis")
-    end
+gauge_train_direct_loop_time =
+	prometheus.gauge("factorio_train_direct_loop_time", "train direct loop time", { "a", "b" })
+histogram_train_direct_loop_time = prometheus.histogram(
+	"factorio_train_direct_loop_time_groups",
+	"train direct loop time",
+	{ "a", "b" },
+	bucket_settings
+)
 
-    -- Add a timestamp for Node-RED
-    data["timestamp"] = game.tick / 60 -- Convert ticks to seconds
+gauge_train_arrival_time = prometheus.gauge("factorio_train_arrival_time", "train arrival time", { "station" })
+histogram_train_arrival_time =
+	prometheus.histogram("factorio_train_arrival_time_groups", "train arrival time", { "station" }, bucket_settings)
 
-    -- Convert the data to JSON and write it to the file
-    local json = game.table_to_json(data, true)
-    write_tick(json)
-end
+gauge_logistic_network_all_construction_robots = prometheus.gauge(
+	"factorio_logistic_network_all_construction_robots",
+	"the total number of construction robots in the network (idle and active + in roboports)",
+	{ "force", "location", "network" }
+)
+gauge_logistic_network_available_construction_robots = prometheus.gauge(
+	"factorio_logistic_network_available_construction_robots",
+	"the number of construction robots available for a job",
+	{ "force", "location", "network" }
+)
 
--- Run the tick handler every 15 seconds (60 ticks * 15)
-script.on_nth_tick(60 * 15, tick_handler)
+gauge_logistic_network_all_logistic_robots = prometheus.gauge(
+	"factorio_logistic_network_all_logistic_robots",
+	"the total number of logistic robots in the network (idle and active + in roboports)",
+	{ "force", "location", "network" }
+)
+gauge_logistic_network_available_logistic_robots = prometheus.gauge(
+	"factorio_logistic_network_available_logistic_robots",
+	"the number of logistic robots available for a job",
+	{ "force", "location", "network" }
+)
+
+gauge_logistic_network_robot_limit = prometheus.gauge(
+	"factorio_logistic_network_robot_limit",
+	"the maximum number of robots the network can work with",
+	{ "force", "location", "network" }
+)
+
+gauge_logistic_network_items = prometheus.gauge(
+	"factorio_logistic_network_items",
+	"the number of items in a logistic network",
+	{ "force", "location", "network", "name" }
+)
+
+gauge_power_production_input =
+	prometheus.gauge("factorio_power_production_input", "power produced", { "force", "name", "network", "surface" })
+gauge_power_production_output =
+	prometheus.gauge("factorio_power_production_output", "power consumed", { "force", "name", "network", "surface" })
+
+script.on_init(function()
+	if game.active_mods["YARM"] then
+		global.yarm_on_site_update_event_id = remote.call("YARM", "get_on_site_updated_event_id")
+		script.on_event(global.yarm_on_site_update_event_id, handleYARM)
+	end
+
+	on_power_init()
+
+	script.on_nth_tick(nth_tick, register_events)
+
+	script.on_event(defines.events.on_player_joined_game, register_events_players)
+	script.on_event(defines.events.on_player_left_game, register_events_players)
+	script.on_event(defines.events.on_player_removed, register_events_players)
+	script.on_event(defines.events.on_player_kicked, register_events_players)
+	script.on_event(defines.events.on_player_banned, register_events_players)
+
+	-- train envents
+	if not disable_train_stats then
+		script.on_event(defines.events.on_train_changed_state, register_events_train)
+	end
+
+	-- power events
+	script.on_event(defines.events.on_built_entity, on_power_build)
+	script.on_event(defines.events.on_robot_built_entity, on_power_build)
+	script.on_event(defines.events.script_raised_built, on_power_build)
+	script.on_event(defines.events.on_player_mined_entity, on_power_destroy)
+	script.on_event(defines.events.on_robot_mined_entity, on_power_destroy)
+	script.on_event(defines.events.on_entity_died, on_power_destroy)
+	script.on_event(defines.events.script_raised_destroy, on_power_destroy)
+
+	-- research events
+	script.on_event(defines.events.on_research_finished, on_research_finished)
+end)
+
+script.on_load(function()
+	if global.yarm_on_site_update_event_id then
+		if script.get_event_handler(global.yarm_on_site_update_event_id) then
+			script.on_event(global.yarm_on_site_update_event_id, handleYARM)
+		end
+	end
+
+	on_power_load()
+
+	script.on_nth_tick(nth_tick, register_events)
+
+	script.on_event(defines.events.on_player_joined_game, register_events_players)
+	script.on_event(defines.events.on_player_left_game, register_events_players)
+	script.on_event(defines.events.on_player_removed, register_events_players)
+	script.on_event(defines.events.on_player_kicked, register_events_players)
+	script.on_event(defines.events.on_player_banned, register_events_players)
+
+	-- train events
+	if not disable_train_stats then
+		script.on_event(defines.events.on_train_changed_state, register_events_train)
+	end
+
+	-- power events
+	script.on_event(defines.events.on_built_entity, on_power_build)
+	script.on_event(defines.events.on_robot_built_entity, on_power_build)
+	script.on_event(defines.events.script_raised_built, on_power_build)
+	script.on_event(defines.events.on_player_mined_entity, on_power_destroy)
+	script.on_event(defines.events.on_robot_mined_entity, on_power_destroy)
+	script.on_event(defines.events.on_entity_died, on_power_destroy)
+	script.on_event(defines.events.script_raised_destroy, on_power_destroy)
+
+	-- research events
+	script.on_event(defines.events.on_research_finished, on_research_finished)
+end)
+
+script.on_configuration_changed(function(event)
+	if game.active_mods["YARM"] then
+		global.yarm_on_site_update_event_id = remote.call("YARM", "get_on_site_updated_event_id")
+		script.on_event(global.yarm_on_site_update_event_id, handleYARM)
+	end
+end)
