@@ -1,7 +1,7 @@
 {
-  "name": "graftorio2",
+  "name": "graftorio-kraus",
   "version": "0.0.20",
-  "title": "graftorio2",
+  "title": "graftorio-kraus",
   "author": "ekrauser",
   "description": "visualize metrics from your factorio game in grafana",
   "homepage": "https://github.com/ekrauser/graftorio2",
